@@ -1,0 +1,17 @@
+{
+  "name": "op-node-client-consumer",
+  "version": "1.0.0",
+  "description": "open payment client consumer",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node index.js"
+  },
+  "author": "DidierNgabo",
+  "license": "ISC",
+  "dependencies": {
+    "@interledger/open-payments": "^7.4.0",
+    "dotenv": "^17.4.2"
+  }
+}
