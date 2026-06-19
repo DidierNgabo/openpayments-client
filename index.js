@@ -21,14 +21,6 @@ import dotenv from 'dotenv';
     throw result.error;
   }
 
-  console.log({
-    cliendAdress: process.env.client_address,
-    senderAddress: process.env.sender_address,
-    receiverAddress: process.env.receiver_address,
-    key: process.env.keyId,
-    privateKey: process.env.privateKey,
-  });
-
   const client = await createAuthenticatedClient({
     walletAddressUrl: process.env.client_address,
     privateKey: process.env.privateKey,
@@ -37,22 +29,22 @@ import dotenv from 'dotenv';
 
   //fetching wallet addresses
 
-  const clientAddress = await client.walletAddress.get({
+  const customerAddress = await client.walletAddress.get({
     url: process.env.client_address,
   });
-  const receiverWalletAddress = await client.walletAddress.get({
+  const merchantWalletAddress = await client.walletAddress.get({
     url: process.env.receiver_address,
   });
-  const senderWalletAddress = await client.walletAddress.get({
+  const platformWalletAddress = await client.walletAddress.get({
     url: process.env.sender_address,
   });
 
   console.log({ senderWalletAddress, receiverWalletAddress });
 
-  // grant request to make a payment from the sender to the receiver
-  const incomingPaymentGrant = await client.grant.request(
+  // grant reques
+  const merchantIncomingPaymentGrant = await client.grant.request(
     {
-      url: receiverWalletAddress.authServer,
+      url: merchantWalletAddress.authServer,
     },
     {
       access_token: {
@@ -74,27 +66,107 @@ import dotenv from 'dotenv';
 
   //creating an incoming payments
 
-  const totalAmount = 5000;
+  const merchantAmount = 9900;
+  const platformAmount = 100;
 
-  const incomingPayment = await client.incomingPayment.create(
+  const merchantIncomingPayment = await client.incomingPayment.create(
     {
       url: receiverWalletAddress.resourceServer,
       accessToken: incomingPaymentGrant.access_token.value,
     },
     {
-      walletAddress: receiverWalletAddress.id,
+      walletAddress: merchantWalletAddress.id,
       metadata: {
-        description: 'Lunch order',
+        description: 'Product order',
       },
       incomingAmount: {
         assetCode: receiverWalletAddress.assetCode,
         assetScale: receiverWalletAddress.assetScale,
-        value: totalAmount.toString(),
+        value: merchantAmount.toString(),
       },
     },
   );
 
-  console.log('Created incoming payment', incomingPayment);
+  console.log('Created merchant incoming payment', merchantIncomingPayment);
+
+  await promptNextStep();
+
+  const platformIncomingPayment = await client.incomingPayment.create(
+    {
+      url: receiverWalletAddress.resourceServer,
+      accessToken: incomingPaymentGrant.access_token.value,
+    },
+    {
+      walletAddress: platformWalletAddress.id,
+      metadata: {
+        description: 'Service Fee',
+      },
+      incomingAmount: {
+        assetCode: receiverWalletAddress.assetCode,
+        assetScale: receiverWalletAddress.assetScale,
+        value: platformAmount.toString(),
+      },
+    },
+  );
+
+  console.log('Created platform incoming payment', merchantIncomingPayment);
+
+  await promptNextStep();
+
+  // request quote
+
+  const customerQuoteGrant = await client.grant.request(
+    {
+      url: customerWalletAddress.authServer,
+    },
+    {
+      access_token: {
+        access: [
+          {
+            type: 'quote',
+            actions: ['create'],
+          },
+        ],
+      },
+    },
+  );
+
+  if (!isFinalizedGrantWithAccessToken(customerQuoteGrant)) {
+    throw new Error('Expected finalized grant');
+  }
+
+  console.log('quote', customerQuoteGrant);
+
+  await promptNextStep();
+
+  // Merchant
+  const merchantQuote = await client.quote.create(
+    {
+      url: customerWalletAddress.resourceServer,
+      accessToken: customerQuoteGrant.access_token.value,
+    },
+    {
+      method: 'ilp',
+      walletAddress: customerWalletAddress.id,
+      receiver: merchantIncomingPayment.id,
+    },
+  );
+
+  console.log('merchant quote', merchantQuote);
+  // Platform
+  const platformQuote = await client.quote.create(
+    {
+      url: customerWalletAddress.resourceServer,
+      accessToken: customerQuoteGrant.access_token.value,
+    },
+    {
+      method: 'ilp',
+      walletAddress: customerWalletAddress.id,
+      receiver: platformIncomingPayment.id,
+    },
+  );
+
+  console.log('platform quote', platformQuote);
 
   await promptNextStep();
 
