@@ -5,6 +5,7 @@ import {
 } from '@interledger/open-payments';
 import readline from 'readline/promises';
 import dotenv from 'dotenv';
+import { randomUUID } from 'crypto';
 
 (async () => {
   const readlineInterface = readline.createInterface({
@@ -39,7 +40,13 @@ import dotenv from 'dotenv';
     url: process.env.sender_address,
   });
 
-  console.log({ senderWalletAddress, receiverWalletAddress });
+  console.log({
+    customerAddress,
+    merchantWalletAddress,
+    platformWalletAddress,
+  });
+
+  const NONCE = randomUUID();
 
   // grant reques
   const merchantIncomingPaymentGrant = await client.grant.request(
@@ -58,9 +65,9 @@ import dotenv from 'dotenv';
     },
   );
 
-  console.log({ incomingPaymentGrant });
+  console.log({ merchantIncomingPaymentGrant });
 
-  if (!isFinalizedGrantWithAccessToken(incomingPaymentGrant)) {
+  if (!isFinalizedGrantWithAccessToken(merchantIncomingPaymentGrant)) {
     throw new Error('Expected finalized grant');
   }
 
@@ -71,8 +78,8 @@ import dotenv from 'dotenv';
 
   const merchantIncomingPayment = await client.incomingPayment.create(
     {
-      url: receiverWalletAddress.resourceServer,
-      accessToken: incomingPaymentGrant.access_token.value,
+      url: merchantWalletAddress.resourceServer,
+      accessToken: merchantIncomingPaymentGrant.access_token.value,
     },
     {
       walletAddress: merchantWalletAddress.id,
@@ -80,8 +87,8 @@ import dotenv from 'dotenv';
         description: 'Product order',
       },
       incomingAmount: {
-        assetCode: receiverWalletAddress.assetCode,
-        assetScale: receiverWalletAddress.assetScale,
+        assetCode: merchantWalletAddress.assetCode,
+        assetScale: merchantWalletAddress.assetScale,
         value: merchantAmount.toString(),
       },
     },
@@ -93,8 +100,8 @@ import dotenv from 'dotenv';
 
   const platformIncomingPayment = await client.incomingPayment.create(
     {
-      url: receiverWalletAddress.resourceServer,
-      accessToken: incomingPaymentGrant.access_token.value,
+      url: platformWalletAddress.resourceServer,
+      accessToken: merchantIncomingPaymentGrant.access_token.value,
     },
     {
       walletAddress: platformWalletAddress.id,
@@ -102,14 +109,14 @@ import dotenv from 'dotenv';
         description: 'Service Fee',
       },
       incomingAmount: {
-        assetCode: receiverWalletAddress.assetCode,
-        assetScale: receiverWalletAddress.assetScale,
+        assetCode: platformWalletAddress.assetCode,
+        assetScale: platformWalletAddress.assetScale,
         value: platformAmount.toString(),
       },
     },
   );
 
-  console.log('Created platform incoming payment', merchantIncomingPayment);
+  console.log('Created platform incoming payment', platformIncomingPayment);
 
   await promptNextStep();
 
@@ -117,7 +124,7 @@ import dotenv from 'dotenv';
 
   const customerQuoteGrant = await client.grant.request(
     {
-      url: customerWalletAddress.authServer,
+      url: customerAddress.authServer,
     },
     {
       access_token: {
@@ -142,12 +149,12 @@ import dotenv from 'dotenv';
   // Merchant
   const merchantQuote = await client.quote.create(
     {
-      url: customerWalletAddress.resourceServer,
+      url: customerAddress.resourceServer,
       accessToken: customerQuoteGrant.access_token.value,
     },
     {
       method: 'ilp',
-      walletAddress: customerWalletAddress.id,
+      walletAddress: customerAddress.id,
       receiver: merchantIncomingPayment.id,
     },
   );
@@ -156,12 +163,12 @@ import dotenv from 'dotenv';
   // Platform
   const platformQuote = await client.quote.create(
     {
-      url: customerWalletAddress.resourceServer,
+      url: customerAddress.resourceServer,
       accessToken: customerQuoteGrant.access_token.value,
     },
     {
       method: 'ilp',
-      walletAddress: customerWalletAddress.id,
+      walletAddress: customerAddress.id,
       receiver: platformIncomingPayment.id,
     },
   );
@@ -170,9 +177,12 @@ import dotenv from 'dotenv';
 
   await promptNextStep();
 
-  const outgoingPaymentGrant = await client.grant.request(
+  // customer grant
+
+  const combinedAmount = merchantAmount + platformAmount;
+  const pendingCustomerOutgoingPaymentGrant = await client.grant.request(
     {
-      url: senderWalletAddress.authServer,
+      url: customerAddress.authServer,
     },
     {
       access_token: {
@@ -182,17 +192,22 @@ import dotenv from 'dotenv';
             actions: ['create'],
             limits: {
               debitAmount: {
-                assetCode: senderWalletAddress.assetCode,
-                assetScale: senderWalletAddress.assetScale,
-                value: totalAmount.toString(),
+                assetCode: customerAddress.assetCode,
+                assetScale: customerAddress.assetScale,
+                value: combinedAmount.toString(),
               },
             },
-            identifier: senderWalletAddress.id,
+            identifier: customerAddress.id,
           },
         ],
       },
       interact: {
         start: ['redirect'],
+        finish: {
+          method: 'redirect',
+          uri: 'http://google.com',
+          nonce: NONCE,
+        },
       },
     },
   );
@@ -207,8 +222,9 @@ import dotenv from 'dotenv';
 
   // 6. Continue outgoing payment grant
   const finalizedOutgoingPaymentGrant = await client.grant.continue({
-    url: outgoingPaymentGrant.continue.uri,
-    accessToken: outgoingPaymentGrant.continue.access_token.value,
+    url: pendingCustomerOutgoingPaymentGrant.continue.uri,
+    accessToken:
+      pendingCustomerOutgoingPaymentGrant.continue.access_token.value,
   });
 
   if (!isFinalizedGrantWithAccessToken(finalizedOutgoingPaymentGrant)) {
@@ -223,24 +239,26 @@ import dotenv from 'dotenv';
   await promptNextStep();
 
   // 7. Create first outgoing payment
-  const outgoingPayment = await client.outgoingPayment.create(
+  // Merchant
+  const customerOutgoingPaymentToMerchant = await client.outgoingPayment.create(
     {
-      url: senderWalletAddress.resourceServer,
-      accessToken: finalizedOutgoingPaymentGrant.access_token.value,
+      url: customerWalletAddress.resourceServer,
+      accessToken: customerOutgoingPaymentGrant.access_token.value,
     },
     {
-      walletAddress: senderWalletAddress.id,
-      incomingPayment: incomingPayment.id,
-      debitAmount: {
-        assetCode: senderWalletAddress.assetCode,
-        assetScale: senderWalletAddress.assetScale,
-        value: totalAmount.toString(),
-      },
-      metadata: {
-        description: 'Lunch payment',
-      },
+      walletAddress: customerWalletAddress.id,
+      quoteId: merchantQuote.id,
     },
   );
-
-  console.log('Created outgoing payment', outgoingPayment);
+  // Platform
+  const customerOutgoingPaymentToPlatform = await client.outgoingPayment.create(
+    {
+      url: customerWalletAddress.resourceServer,
+      accessToken: customerOutgoingPaymentGrant.access_token.value,
+    },
+    {
+      walletAddress: customerWalletAddress.id,
+      quoteId: platformQuote.id,
+    },
+  );
 })();
